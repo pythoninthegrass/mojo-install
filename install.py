@@ -8,7 +8,6 @@ import sys
 import urllib.request
 from pathlib import Path
 
-# TODO use shutil to copy files
 
 # get os id
 if platform.system() == "Linux":
@@ -25,7 +24,7 @@ class SysCall:
         """Run a system command"""
         if capture_output:
             result = subprocess.run(cmd, *args, shell=True, capture_output=True)
-            return result.returncode, result.stdout.decode("utf-8"), result.stderr.decode("utf-8")
+            return result
         else:
             if isinstance(cmd, list):
                 cmd = ' '.join(cmd)
@@ -60,11 +59,17 @@ class SysCall:
 # instantiate syscall class
 syscall = SysCall()
 
+# TODO: qa
 # declare variables for each class method without any arguments
 run_cmd = syscall.run_command
 test_bin = syscall.test_bin
 extract_deb = syscall.extract_deb
 param = syscall.param
+
+# fix crashdb directory not found
+crashdb_dir = Path("/opt/modular/crashdb")
+subprocess.run(['sudo', 'mkdir', '-p', f"{crashdb_dir}"])
+subprocess.run(['sudo', 'chmod', '777', f"{crashdb_dir}"])
 
 # check if modular is installed
 modular = test_bin("modular")
@@ -88,7 +93,9 @@ MOJO_LIB_PATH = f"{HOME}/{MOJO_LIB_RELATIVE_PATH}"
 
 authenticated = False
 if modular:
-    authenticated = "user.id" in run_cmd(["modular", "config-list"], capture_output=True).stdout.decode("utf-8")
+    output = run_cmd(["modular", "config-list"], capture_output=True).stdout.decode("utf-8")
+    if output != "":
+        authenticated = "user.id" in output.splitlines()
 
 skip_next_arg = SKIP_NEXT_ARG
 for i in range(1, len(sys.argv)):
@@ -229,9 +236,6 @@ if mojo:
 
 run_cmd(["modular", "install", "mojo"],
         env={"LD_LIBRARY_PATH": f"{os.environ.get('LD_LIBRARY_PATH')}:{MOJO_LIB_PATH}"})
-
-# fix crashdb directory not found:
-Path(f"{HOME}/.modular/crashdb").mkdir(parents=True, exist_ok=True)
 
 
 def rc_path():
