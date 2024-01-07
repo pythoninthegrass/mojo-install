@@ -10,11 +10,26 @@ from pathlib import Path
 
 # TODO use shutil to copy files
 
+# get os id
+if platform.system() == "Linux":
+    release_files = Path("/etc").glob("*release")
+    os_release = []
+    for file in release_files:
+        os_release += file.read_text().splitlines()
+    os_id = list(filter(lambda line: line.startswith("ID="), os_release))[0].split("=")[1].strip("\"")
+
+
 class SysCall:
     @staticmethod
-    def run_command(cmd: str):
+    def run_command(cmd: str, *args, capture_output: bool = False):
         """Run a system command"""
-        return os.system(cmd)
+        if capture_output:
+            result = subprocess.run(cmd, *args, shell=True, capture_output=True)
+            return result.returncode, result.stdout.decode("utf-8"), result.stderr.decode("utf-8")
+        else:
+            if isinstance(cmd, list):
+                cmd = ' '.join(cmd)
+            return os.system(cmd, *args)
 
     @staticmethod
     def test_bin(name: str):
@@ -29,54 +44,30 @@ class SysCall:
     @staticmethod
     def extract_deb(name: str, path: str):
         """Extract a deb file"""
-        cmd = f"cd {WORK_DIR} && ar -vx {path} && tar -xf {name}"
+        cmd = f"cd {WORK_DIR} && ar -vx {path} && tar -xf {name} 2>&1 >/dev/null"   # TODO: still not working ('x - debian-binary')
         ret_code = SysCall.run_command(cmd)
         return True if ret_code == 0 else False
 
+    @staticmethod
+    def param(name: str):
+        """Get an environment variable"""
+        try:
+            return os.environ.get(name)
+        except KeyError:
+            return None
 
-def param(name: str):
-    """Get an environment variable"""
-    try:
-        return os.environ.get(name)
-    except KeyError:
-        return None
-
-
-# get os id
-if platform.system() == "Linux":
-    release_files = Path("/etc").glob("*release")
-    os_release = []
-    for file in release_files:
-        os_release += file.read_text().splitlines()
-    os_id = list(filter(lambda line: line.startswith("ID="), os_release))[0].split("=")[1].strip("\"")
-
-
-def test_bin(name: str):
-    """Check if bin is installed"""
-    if os_id == "arch":
-        cmd = f"pacman -Qs {name} 2>&1 >/dev/null"
-    elif os_id == "fedora":
-        cmd = f"rpm -q {name} 2>&1 >/dev/null"
-        ret_code = os.system(cmd)
-    return True if shutil.which(name) is not None or ret_code == 0 else False
-
-
-def extract_deb(name: str, path: str):
-    """Extract a deb file"""
-    ret_code = os.system(f"cd {WORK_DIR} && ar -vx {path} && tar -xf {name}")
-    return True if ret_code == 0 else False
-
-
-# check if modular is installed
-modular = test_bin("modular")
 
 # instantiate syscall class
 syscall = SysCall()
 
 # declare variables for each class method without any arguments
-run_command = syscall.run_command
+run_cmd = syscall.run_command
 test_bin = syscall.test_bin
 extract_deb = syscall.extract_deb
+param = syscall.param
+
+# check if modular is installed
+modular = test_bin("modular")
 
 # env vars
 HOME = param("HOME")
@@ -84,7 +75,7 @@ if HOME is None:
     HOME = Path("~").expanduser()
 TOKEN = None
 ARCH = "x86_64-linux-gnu"
-WORK_DIR = f"{HOME}/.local/arch-mojo/"
+WORK_DIR = "/tmp/mojo-install"
 PKGBUILD_URL = "https://raw.githubusercontent.com/Sharktheone/arch-mojo/main/PKGBUILD"
 LIBINFO_URL = "https://ftp.debian.org/debian/pool/main/n/ncurses/libtinfo6_6.4-4_amd64.deb"
 LIBNCURSES_URL = "https://ftp.debian.org/debian/pool/main/n/ncurses/libncurses6_6.4-4_amd64.deb"
@@ -97,8 +88,7 @@ MOJO_LIB_PATH = f"{HOME}/{MOJO_LIB_RELATIVE_PATH}"
 
 authenticated = False
 if modular:
-    authenticated = "user.id" in subprocess.run(["modular", "config-list"],
-                                                capture_output=True).stdout.decode("utf-8")
+    authenticated = "user.id" in run_cmd(["modular", "config-list"], capture_output=True).stdout.decode("utf-8")
 
 skip_next_arg = SKIP_NEXT_ARG
 for i in range(1, len(sys.argv)):
@@ -161,24 +151,28 @@ for dep in deps:
         packages.append(dep)
 
 if len(packages) > 0:
-    os.system(f"sudo {cmd} {' '.join(packages)}")
+    run_cmd(["sudo", cmd] + packages)
 
-if os_id == "fedora":
-    urllib.request.urlretrieve(LIBINFO_URL,
-                               f"{WORK_DIR}/libtinfo.deb")
-    os.system(f"cd {WORK_DIR}/ && ar -vx libtinfo.deb && tar -xf data.tar.xz")
+# TODO: qa
+if not modular and os_id == "fedora":
+    if not Path(f"{WORK_DIR}/libtinfo.deb").exists():
+        urllib.request.urlretrieve(LIBINFO_URL,
+                                f"{WORK_DIR}/libtinfo.deb")
+        extract_deb("data.tar.xz", "libtinfo.deb")
     if GLOBAL_INSTALL:
-        os.system(f"sudo cp {WORK_DIR}/lib/{ARCH}/libtinfo.so.6.4 /usr/lib/")
-        os.system("sudo ln -s /usr/lib/libtinfo.so.6.4 /usr/lib/libtinfo.so.6")
+        run_cmd(["sudo", "cp", str(Path(WORK_DIR) / f"lib/{ARCH}/libtinfo.so.6.4"), "/usr/lib/"])
+        run_cmd(["sudo", "ln", "-sf", "/usr/lib/libtinfo.so.6.4", "/usr/lib/libtinfo.so.6"])
     else:
-        os.system(f"mkdir -p {MOJO_LIB_PATH}")
-        os.system(f"cp {WORK_DIR}/lib/{ARCH}/libtinfo.so.6.4 {MOJO_LIB_PATH}/libtinfo.so.6")
+        mojo_lib_path = Path(MOJO_LIB_PATH)
+        mojo_lib_path.mkdir(parents=True, exist_ok=True)
+        run_cmd(["sudo", "cp", str(Path(WORK_DIR) / f"lib/{ARCH}/libtinfo.so.6.4"), str(mojo_lib_path / "libtinfo.so.6")])
 
 # install modular if not installed
 if not modular and os_id == "arch":
-    urllib.request.urlretrieve(PKGBUILD_URL,
-                               f"{WORK_DIR}/PKGBUILD")
-    os.system(f"cd {WORK_DIR}/ && makepkg -si")
+    if not Path(f"{WORK_DIR}/PKGBUILD").exists():
+        urllib.request.urlretrieve(PKGBUILD_URL,
+                                f"{WORK_DIR}/PKGBUILD")
+    subprocess.run(["makepkg", "-si"], cwd=WORK_DIR)
 
 # authenticate in modular
 if not authenticated:
@@ -192,7 +186,8 @@ if not authenticated:
                     break
     else:
         TOKEN = input("Please enter your Modular auth token: ")
-    os.system(f"LD_LIBRARY_PATH=$LD_LIBRARY_PATH:{MOJO_LIB_PATH} modular auth {TOKEN}")
+    subprocess.run(["modular", "auth", TOKEN],
+                    env={"LD_LIBRARY_PATH": f"{os.environ.get('LD_LIBRARY_PATH')}:{MOJO_LIB_PATH}"})
 
 # download ncurses lib
 urllib.request.urlretrieve(LIBNCURSES_URL,
@@ -202,37 +197,41 @@ urllib.request.urlretrieve(LIBNCURSES_URL,
 urllib.request.urlretrieve(LIBEDIT_URL,
                            f"{WORK_DIR}/libedit.deb")
 
-os.system(f"cd {WORK_DIR} && ar -vx libncurses.deb && tar -xf data.tar.xz 2>&1 >/dev/null")
-os.system(f"cd {WORK_DIR} && ar -vx libedit.deb && tar -xf data.tar.xz 2>&1 >/dev/null")
+extract_deb(f"{WORK_DIR}/libncurses.deb", "data.tar.xz")
+extract_deb(f"{WORK_DIR}/libedit.deb", "data.tar.xz")
 
 
+# TODO: qa
 # copy libs
 if GLOBAL_INSTALL:
-    os.system(f"sudo cp {WORK_DIR}/lib/{ARCH}/libncurses.so.6.4 /lib/libncurses.so.6.4")
-    os.system(f"sudo cp {WORK_DIR}/usr/lib/{ARCH}/libform.so.6.4 /usr/lib/libform.so.6.4")
-    os.system(f"sudo cp {WORK_DIR}/usr/lib/{ARCH}/libpanel.so.6.4 /usr/lib/libpanel.so.6.4")
-    os.system(f"sudo cp {WORK_DIR}/usr/lib/{ARCH}/libedit.so.2.0.70 /usr/lib/libedit.so.2.0.70")
-    os.system("sudo ln -s /lib/libncurses.so.6.4 /lib/libncurses.so.6")
-    os.system("sudo ln -s /usr/lib/libform.so.6.4 /usr/lib/libform.so.6")
-    os.system("sudo ln -s /usr/lib/libpanel.so.6.4 /usr/lib/libpanel.so.6")
-    os.system("sudo ln -s /usr/lib/libedit.so.2.0.70 /usr/lib/libedit.so.2")
-else:
-    os.system(f"mkdir -p {MOJO_LIB_PATH}")
-    os.system(f"cp {WORK_DIR}/lib/{ARCH}/libncurses.so.6.4 {MOJO_LIB_PATH}/libncurses.so.6")
-    os.system(f"cp {WORK_DIR}/usr/lib/{ARCH}/libform.so.6.4 {MOJO_LIB_PATH}/libform.so.6")
-    os.system(f"cp {WORK_DIR}/usr/lib/{ARCH}/libpanel.so.6.4 {MOJO_LIB_PATH}/libpanel.so.6")
-    os.system(f"cp {WORK_DIR}/usr/lib/{ARCH}/libedit.so.2.0.70 {MOJO_LIB_PATH}/libedit.so.2")
+    if GLOBAL_INSTALL:
+        shutil.copy(f"{WORK_DIR}/lib/{ARCH}/libncurses.so.6.4", "/lib/libncurses.so.6.4")
+        shutil.copy(f"{WORK_DIR}/usr/lib/{ARCH}/libform.so.6.4", "/usr/lib/libform.so.6.4")
+        shutil.copy(f"{WORK_DIR}/usr/lib/{ARCH}/libpanel.so.6.4", "/usr/lib/libpanel.so.6.4")
+        shutil.copy(f"{WORK_DIR}/usr/lib/{ARCH}/libedit.so.2.0.70", "/usr/lib/libedit.so.2.0.70")
+        os.symlink("/lib/libncurses.so.6.4", "/lib/libncurses.so.6")
+        os.symlink("/usr/lib/libform.so.6.4", "/usr/lib/libform.so.6")
+        os.symlink("/usr/lib/libpanel.so.6.4", "/usr/lib/libpanel.so.6")
+        os.symlink("/usr/lib/libedit.so.2.0.70", "/usr/lib/libedit.so.2")
+    else:
+        mojo_lib_path = Path(MOJO_LIB_PATH)
+        mojo_lib_path.mkdir(parents=True, exist_ok=True)
+        shutil.copy(f"{WORK_DIR}/lib/{ARCH}/libncurses.so.6.4", mojo_lib_path / "libncurses.so.6")
+        shutil.copy(f"{WORK_DIR}/usr/lib/{ARCH}/libform.so.6.4", mojo_lib_path / "libform.so.6")
+        shutil.copy(f"{WORK_DIR}/usr/lib/{ARCH}/libpanel.so.6.4", mojo_lib_path / "libpanel.so.6")
+        shutil.copy(f"{WORK_DIR}/usr/lib/{ARCH}/libedit.so.2.0.70", mojo_lib_path / "libedit.so.2")
 
 # install mojo
-mojo = shutil.which(f"PATH=$PATH:{HOME}/.modular/pkg/packages.modular.com_mojo/bin/ mojo") is not None
+mojo = test_bin("mojo")
 if mojo:
     print("Mojo is already installed... cleaning up")
-    os.system(f"PATH=$PATH:{HOME}/.modular/pkg/packages.modular.com_mojo/bin/ modular clean")
+    run_cmd("modular clean")
 
-os.system(f"LD_LIBRARY_PATH=$LD_LIBRARY_PATH:{MOJO_LIB_PATH} modular install mojo")
+run_cmd(["modular", "install", "mojo"],
+        env={"LD_LIBRARY_PATH": f"{os.environ.get('LD_LIBRARY_PATH')}:{MOJO_LIB_PATH}"})
 
 # fix crashdb directory not found:
-os.makedirs(f"{HOME}/.modular/crashdb", exist_ok=True)
+Path(f"{HOME}/.modular/crashdb").mkdir(parents=True, exist_ok=True)
 
 
 def rc_path():
