@@ -1,0 +1,14 @@
+{
+  "[python]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4,
+  },
+    "python.testing.pytestArgs": [
+        "."
+    ],
+    // https://github.com/astral-sh/ruff-vscode
+    "python.analysis.ignore": [
+      "*"
+    ],
+    "ansible.python.interpreterPath": "/opt/homebrew/bin/python3",
+}
