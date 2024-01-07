@@ -10,20 +10,80 @@ from pathlib import Path
 
 # TODO use shutil to copy files
 
-ARCH = "x86_64-linux-gnu"
+class SysCall:
+    @staticmethod
+    def run_command(cmd: str):
+        """Run a system command"""
+        return os.system(cmd)
+
+    @staticmethod
+    def test_bin(name: str):
+        """Check if bin is installed"""
+        if os_id == "arch":
+            cmd = f"pacman -Qs {name} 2>&1 >/dev/null"
+        elif os_id == "fedora":
+            cmd = f"rpm -q {name} 2>&1 >/dev/null"
+        ret_code = SysCall.run_command(cmd)
+        return True if shutil.which(name) is not None or ret_code == 0 else False
+
+    @staticmethod
+    def extract_deb(name: str, path: str):
+        """Extract a deb file"""
+        cmd = f"cd {WORK_DIR} && ar -vx {path} && tar -xf {name}"
+        ret_code = SysCall.run_command(cmd)
+        return True if ret_code == 0 else False
 
 
 def param(name: str):
+    """Get an environment variable"""
     try:
-        return os.environ[name]
-    except:
+        return os.environ.get(name)
+    except KeyError:
         return None
 
 
+# get os id
+if platform.system() == "Linux":
+    release_files = Path("/etc").glob("*release")
+    os_release = []
+    for file in release_files:
+        os_release += file.read_text().splitlines()
+    os_id = list(filter(lambda line: line.startswith("ID="), os_release))[0].split("=")[1].strip("\"")
+
+
+def test_bin(name: str):
+    """Check if bin is installed"""
+    if os_id == "arch":
+        cmd = f"pacman -Qs {name} 2>&1 >/dev/null"
+    elif os_id == "fedora":
+        cmd = f"rpm -q {name} 2>&1 >/dev/null"
+        ret_code = os.system(cmd)
+    return True if shutil.which(name) is not None or ret_code == 0 else False
+
+
+def extract_deb(name: str, path: str):
+    """Extract a deb file"""
+    ret_code = os.system(f"cd {WORK_DIR} && ar -vx {path} && tar -xf {name}")
+    return True if ret_code == 0 else False
+
+
+# check if modular is installed
+modular = test_bin("modular")
+
+# instantiate syscall class
+syscall = SysCall()
+
+# declare variables for each class method without any arguments
+run_command = syscall.run_command
+test_bin = syscall.test_bin
+extract_deb = syscall.extract_deb
+
+# env vars
 HOME = param("HOME")
 if HOME is None:
     HOME = Path("~").expanduser()
-
+TOKEN = None
+ARCH = "x86_64-linux-gnu"
 WORK_DIR = f"{HOME}/.local/arch-mojo/"
 PKGBUILD_URL = "https://raw.githubusercontent.com/Sharktheone/arch-mojo/main/PKGBUILD"
 LIBINFO_URL = "https://ftp.debian.org/debian/pool/main/n/ncurses/libtinfo6_6.4-4_amd64.deb"
@@ -31,83 +91,79 @@ LIBNCURSES_URL = "https://ftp.debian.org/debian/pool/main/n/ncurses/libncurses6_
 LIBEDIT_URL = "https://ftp.debian.org/debian/pool/main/libe/libedit/libedit2_3.1-20221030-2_amd64.deb"
 GLOBAL_INSTALL = False
 ONLY_MOJO = False
-FEDORA = False
 SKIP_NEXT_ARG = False
-TOKEN = None
 MOJO_LIB_RELATIVE_PATH = ".local/lib/mojo"
 MOJO_LIB_PATH = f"{HOME}/{MOJO_LIB_RELATIVE_PATH}"
-modular = shutil.which("modular") is not None
 
 authenticated = False
 if modular:
     authenticated = "user.id" in subprocess.run(["modular", "config-list"],
                                                 capture_output=True).stdout.decode("utf-8")
 
-for arg in sys.argv:
-    if SKIP_NEXT_ARG:
-        SKIP_NEXT_ARG = False
+skip_next_arg = SKIP_NEXT_ARG
+for i in range(1, len(sys.argv)):
+    arg = sys.argv[i]
+    if skip_next_arg:
+        skip_next_arg = False
         continue
 
-    if arg.startswith("--dir="):
-        WORK_DIR = arg.split("=")[1]
-    elif arg.startswith("-d="):
-        WORK_DIR = arg.split("=")[1]
-    elif arg == "--global":
-        GLOBAL_INSTALL = True
-    elif arg == "-g":
-        GLOBAL_INSTALL = True
-    elif arg == "--mojo":
-        ONLY_MOJO = True
-    elif arg == "-m":
-        ONLY_MOJO = True
-    elif arg == "--fedora":
-        FEDORA = True
-    elif arg == "-f":
-        FEDORA = True
-    elif arg == "--modular-token":
-        index = sys.argv.index(arg) + 1
-        if index >= len(sys.argv):
-            print("No token provided")
-            exit(1)
-        TOKEN = sys.argv[index]
+    match arg:
+        case "--dir" | "-d":
+            if i+1 >= len(sys.argv):
+                print("No directory provided")
+                exit(1)
+            WORK_DIR = sys.argv[i+1]
+            skip_next_arg = True
+        case "--global" | "-g":
+            GLOBAL_INSTALL = True
+        case "--mojo" | "-m":
+            ONLY_MOJO = True
+        case "--modular-token":
+            if i+1 >= len(sys.argv):
+                print("No token provided")
+                exit(1)
+            TOKEN = sys.argv[i+1]
+            if TOKEN == "" or not TOKEN.startswith("mut_") or not len(TOKEN) == 36:
+                print("Invalid token")
+                exit(1)
+            skip_next_arg = True
+        case "--help" | "-h":
+            print("Usage: python3 install.py [options]")
+            print("Options:")
+            print("  --dir <path>  | -d <path>  : Set the working directory")
+            print("  --global      | -g         : Install the libs globally")
+            print("  --help        | -h         : Show this help message")
+            print("  --mojo        | -m         : Only install mojo (modular must be installed)")
+            print("  --fedora      | -f         : Install for fedora")
+            print("  --modular-token <token>    : Set the modular token")
+            exit(0)
 
-        if TOKEN == "" or not TOKEN.startswith("mut_") or not len(TOKEN) == 36:
-            print("Invalid token")
-            exit(1)
-        SKIP_NEXT_ARG = True
-    elif arg == "--help" \
-            or arg == "-h":
-        print("Usage: python3 install.py [options]")
-        print("Options:")
-        print("  --dir=<path>  | -d=<path>  : Set the working directory")
-        print("  --global      | -g         : Install the libs globally")
-        print("  --help        | -h         : Show this help message")
-        print("  --mojo        | -m         : Only install mojo (modular must be installed)")
-        print("  --fedora      | -f         : Install for fedora")
-        print("  --modular-token <token>    : Set the modular token")
-        exit(0)
-
-WORK_DIR = WORK_DIR.replace("~", param("HOME"))
+WORK_DIR = WORK_DIR.replace("~", HOME)
+Path(WORK_DIR).mkdir(parents=True, exist_ok=True)
 
 if ONLY_MOJO and not modular:
     print("Modular must be installed to install mojo")
     exit(1)
 
-try:
-    os.makedirs(WORK_DIR)
-except FileExistsError:
-    pass
-
+# TODO: qa
 # install dependencies
-if platform.system() == "Linux":
-    os_release = subprocess.run(["cat", "/etc/*release"],
-                                capture_output=True).stdout.decode("utf-8")
-    # cat /etc/os-release | grep -E "^ID"
-    # os_id =
+if os_id == "arch":
+    deps = ["base-devel", "git", "binutils", "libbsd"]
+    cmd = "pacman -S --noconfirm"
+elif os_id == "fedora":
+    deps = ["binutils"]
+    cmd = "dnf install -y"
 
-if FEDORA:
-    os.system("sudo dnf install -y binutils")
+packages = []
 
+for dep in deps:
+    if test_bin(dep) is None:
+        packages.append(dep)
+
+if len(packages) > 0:
+    os.system(f"sudo {cmd} {' '.join(packages)}")
+
+if os_id == "fedora":
     urllib.request.urlretrieve(LIBINFO_URL,
                                f"{WORK_DIR}/libtinfo.deb")
     os.system(f"cd {WORK_DIR}/ && ar -vx libtinfo.deb && tar -xf data.tar.xz")
@@ -119,16 +175,21 @@ if FEDORA:
         os.system(f"cp {WORK_DIR}/lib/{ARCH}/libtinfo.so.6.4 {MOJO_LIB_PATH}/libtinfo.so.6")
 
 # install modular if not installed
-if not modular:
-    # download PKGBUILD
+if not modular and os_id == "arch":
     urllib.request.urlretrieve(PKGBUILD_URL,
                                f"{WORK_DIR}/PKGBUILD")
     os.system(f"cd {WORK_DIR}/ && makepkg -si")
 
 # authenticate in modular
 if not authenticated:
-    if TOKEN is None and param("MODULAR_TOKEN") is not None:
-        TOKEN = param("MODULAR_TOKEN")
+    if TOKEN is None and param("AUTH_KEY") is not None:
+        TOKEN = param("AUTH_KEY")
+    elif TOKEN is None and Path(".env").exists():
+        with open(".env", "r") as env_file:
+            for line in env_file.readlines():
+                if line.startswith("AUTH_KEY="):
+                    TOKEN = line.split("=")[1].strip()
+                    break
     else:
         TOKEN = input("Please enter your Modular auth token: ")
     os.system(f"LD_LIBRARY_PATH=$LD_LIBRARY_PATH:{MOJO_LIB_PATH} modular auth {TOKEN}")
@@ -141,8 +202,8 @@ urllib.request.urlretrieve(LIBNCURSES_URL,
 urllib.request.urlretrieve(LIBEDIT_URL,
                            f"{WORK_DIR}/libedit.deb")
 
-os.system(f"cd {WORK_DIR}/ && ar -vx libncurses.deb && tar -xf data.tar.xz")
-os.system(f"cd {WORK_DIR}/ && ar -vx libedit.deb && tar -xf data.tar.xz")
+os.system(f"cd {WORK_DIR} && ar -vx libncurses.deb && tar -xf data.tar.xz 2>&1 >/dev/null")
+os.system(f"cd {WORK_DIR} && ar -vx libedit.deb && tar -xf data.tar.xz 2>&1 >/dev/null")
 
 
 # copy libs
